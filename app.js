@@ -36,11 +36,42 @@ document.addEventListener('DOMContentLoaded', () => {
     dropZone.addEventListener('click', () => fileInput.click());
     dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-    dropZone.addEventListener('drop', (e) => {
+    dropZone.addEventListener('drop', async (e) => {
         e.preventDefault();
         dropZone.classList.remove('dragover');
-        handleFiles(e.dataTransfer.files);
+        
+        const items = e.dataTransfer.items;
+        if (items) {
+            const files = [];
+            const queue = [];
+            for (let i = 0; i < items.length; i++) {
+                const entry = items[i].webkitGetAsEntry();
+                if (entry) queue.push(traverseFileTree(entry, files));
+            }
+            await Promise.all(queue);
+            handleFiles(files);
+        } else {
+            handleFiles(e.dataTransfer.files);
+        }
     });
+
+    async function traverseFileTree(entry, fileList) {
+        if (entry.isFile) {
+            return new Promise((resolve) => {
+                entry.file((file) => {
+                    fileList.push(file);
+                    resolve();
+                });
+            });
+        } else if (entry.isDirectory) {
+            const dirReader = entry.createReader();
+            const entries = await new Promise((resolve) => {
+                dirReader.readEntries((results) => resolve(results));
+            });
+            const promises = entries.map(e => traverseFileTree(e, fileList));
+            return Promise.all(promises);
+        }
+    }
     fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
 
     document.getElementById('btn-clear-files').addEventListener('click', () => {
@@ -72,43 +103,86 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function handleFiles(files) {
     console.log(`[File] Handling ${files.length} files`);
+    const fileArray = Array.from(files);
     
-    Array.from(files).forEach(file => {
+    // Filter files to only include the core data types requested by the user
+    const filteredFiles = fileArray.filter(f => {
+        const name = f.name.toLowerCase();
+        return name.includes('sij') || name.includes('ertan') || name.includes('cond');
+    });
+
+    console.log(`[File] Filtered to ${filteredFiles.length} core data files`);
+
+    // Detect dominant type for smart mode selection based on user convention
+    const counts = { sij: 0, ertan: 0, cond: 0 };
+    filteredFiles.forEach(f => {
+        const name = f.name.toLowerCase();
+        if (name.includes('sij')) counts.sij++;
+        else if (name.includes('ertan')) counts.ertan++;
+        else if (name.includes('cond')) counts.cond++;
+    });
+
+    console.log("[File] Type counts:", counts);
+
+    const dominant = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
+    if (counts[dominant] > 0) {
+        const targetMode = dominant === 'sij' ? 'fullband' : (dominant === 'ertan' ? 'permittivity' : 'conductivity');
+        document.getElementById('mode-select').value = targetMode;
+        console.log(`[File] Auto-selected mode: ${targetMode} based on dominant type: ${dominant}`);
+    }
+
+    filteredFiles.forEach(file => {
         const reader = new FileReader();
         reader.onload = (e) => {
             try {
                 const text = e.target.result;
-                console.log(`[File] Parsing ${file.name}...`);
-                const parsed = parseData(text);
+                const parsed = parseData(text, file.name);
                 
                 if (parsed.length > 0) {
                     state.loadedData.push({
                         filename: file.name,
                         rawData: parsed
                     });
-                    console.log(`[File] Successfully loaded ${parsed.length} points from ${file.name}`);
                     updateFileList();
                 } else {
-                    console.warn(`[File] No valid data found in ${file.name}`);
+                    console.warn(`[File] No valid data points parsed from ${file.name}. Check format.`);
                 }
             } catch (err) {
                 console.error(`[File] Error processing ${file.name}:`, err);
             }
         };
-        reader.onerror = (err) => console.error(`[File] FileReader error on ${file.name}:`, err);
         reader.readAsText(file);
     });
 }
 
-function parseData(text) {
+function parseData(text, filename) {
     const lines = text.split('\n');
     const data = [];
     for (let line of lines) {
         line = line.trim();
-        if (!line || line.startsWith('%') || line.includes('[') || line.includes(']')) continue;
-        const parts = line.split(/\s+/).map(Number);
-        if (parts.some(isNaN)) continue;
-        data.push(parts);
+        if (!line || /^[%\#/]/.test(line)) continue;
+        
+        // Split by whitespace or comma
+        const parts = line.split(/[\s,]+/).filter(p => p.length > 0);
+        
+        // Convert to numbers, handling literal "NaN" and cleaning up potential unit strings
+        const nums = parts.map(p => {
+            if (p.toLowerCase() === 'nan') return NaN;
+            // Keep only characters valid in a number
+            const cleaned = p.replace(/[^0-9.\-+eE]/g, '');
+            return cleaned ? Number(cleaned) : NaN;
+        });
+
+        // A valid data row should have at least 2 numbers and the first one must be a number
+        // We check the first two columns specifically as they are essential for all modes
+        if (nums.length >= 2 && !isNaN(nums[0]) && !isNaN(nums[1])) {
+            // Keep the whole row including NaNs to preserve column indexing
+            data.push(nums);
+        }
+    }
+
+    if (data.length === 0 && text.trim().length > 0) {
+        console.warn(`[Parse] Failed to find numeric data in ${filename}. First 100 chars: "${text.substring(0, 100).replace(/\n/g, '\\n')}"`);
     }
     return data;
 }
@@ -126,14 +200,18 @@ function extractData(parsedData, modeKey) {
         });
     } else if (modeKey === 'permittivity' || modeKey === 'dielectricloss' || modeKey === 'losstangent') {
         parsedData.forEach(row => {
-            if (row.length >= 4) { // Changed from > 3 to >= 4
+            if (row.length >= 3) { // Relaxed from 4 to 3
                 result.freq_GHz.push(row[0]);
                 result.values.epsilon_r = result.values.epsilon_r || [];
                 result.values.epsilon_r.push(row[1]);
+                
+                // If 4 columns, tan_delta is row[3]. If 3 columns, it's row[2].
+                const tanDeltaIdx = row.length >= 4 ? 3 : 2;
                 result.values.tan_delta = result.values.tan_delta || [];
-                result.values.tan_delta.push(row[3]);
+                result.values.tan_delta.push(row[tanDeltaIdx]);
+                
                 result.values.dielectric_loss = result.values.dielectric_loss || [];
-                result.values.dielectric_loss.push(row[1] * row[3]);
+                result.values.dielectric_loss.push(row[1] * row[tanDeltaIdx]);
             }
         });
     } else if (modeKey === 'conductivity') {
@@ -165,18 +243,50 @@ function extractData(parsedData, modeKey) {
 function updateFileList() {
     const listEl = document.getElementById('file-list');
     listEl.innerHTML = '';
-    state.loadedData.forEach((d, i) => {
-        const li = document.createElement('li');
-        li.textContent = d.filename;
-        const removeBtn = document.createElement('span');
-        removeBtn.textContent = '×';
-        removeBtn.className = 'remove-file';
-        removeBtn.onclick = () => {
-            state.loadedData.splice(i, 1);
-            updateFileList();
-        };
-        li.appendChild(removeBtn);
-        listEl.appendChild(li);
+    
+    // Group files strictly by the core types
+    const groups = {
+        'Sパラメータ (sij)': [],
+        '誘電率・誘電正接 (ertand)': [],
+        '導電率 (cond)': []
+    };
+
+    state.loadedData.forEach((d) => {
+        const name = d.filename.toLowerCase();
+        if (name.includes('sij')) groups['Sパラメータ (sij)'].push(d);
+        else if (name.includes('ertan')) groups['誘電率・誘電正接 (ertand)'].push(d);
+        else if (name.includes('cond')) groups['導電率 (cond)'].push(d);
+    });
+
+    Object.keys(groups).forEach(groupName => {
+        if (groups[groupName].length === 0) return;
+
+        const groupHeader = document.createElement('li');
+        groupHeader.style.fontWeight = 'bold';
+        groupHeader.style.backgroundColor = 'rgba(0,0,0,0.1)';
+        groupHeader.style.fontSize = '11px';
+        groupHeader.style.padding = '6px 10px';
+        groupHeader.style.color = '#333';
+        groupHeader.textContent = groupName;
+        listEl.appendChild(groupHeader);
+
+        groups[groupName].forEach(data => {
+            const li = document.createElement('li');
+            li.textContent = data.filename;
+            const removeBtn = document.createElement('span');
+            removeBtn.textContent = '×';
+            removeBtn.className = 'remove-file';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                const idx = state.loadedData.indexOf(data);
+                if (idx !== -1) {
+                    state.loadedData.splice(idx, 1);
+                    updateFileList();
+                }
+            };
+            li.appendChild(removeBtn);
+            listEl.appendChild(li);
+        });
     });
 }
 
@@ -399,8 +509,18 @@ function plotGraph() {
 
     console.log(`[Plot] Mode: ${modeKey}, Style: ${plotStyle}, Field: ${dataField}, Scale: ${scale}`);
 
-    // Extract data for current mode from raw data
-    const currentData = state.loadedData.map(d => {
+    // Filter data based on mode to ensure only relevant files are processed
+    let filteredStateData = state.loadedData;
+    if (modeKey === 'segment' || modeKey === 'fullband') {
+        filteredStateData = state.loadedData.filter(d => d.filename.toLowerCase().includes('sij'));
+    } else if (modeKey === 'permittivity' || modeKey === 'dielectricloss' || modeKey === 'losstangent') {
+        filteredStateData = state.loadedData.filter(d => d.filename.toLowerCase().includes('ertan'));
+    } else if (modeKey === 'conductivity') {
+        filteredStateData = state.loadedData.filter(d => d.filename.toLowerCase().includes('cond'));
+    }
+
+    // Extract data for current mode from filtered data
+    const currentData = filteredStateData.map(d => {
         const extracted = extractData(d.rawData, modeKey);
         extracted.filename = d.filename;
         return extracted;
