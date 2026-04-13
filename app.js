@@ -506,12 +506,21 @@ function detectBands(freq) {
     return bands;
 }
 
-function plotGraph() {
+async function plotGraph() {
     console.log("[Plot] Starting plot process...");
     if (state.loadedData.length === 0) {
         console.warn("[Plot] No data loaded");
         return alert("データファイルが読み込まれていません。");
     }
+
+    const progressOverlay = document.getElementById('plot-progress');
+    const progressText = document.getElementById('progress-text');
+    
+    progressOverlay.style.display = 'flex';
+    progressText.textContent = 'データを準備中...';
+
+    // Small delay to allow UI to show progress overlay
+    await new Promise(resolve => setTimeout(resolve, 50));
 
     const modeKey = document.getElementById('mode-select').value;
     const modeCfg = MODES[modeKey];
@@ -664,23 +673,25 @@ function plotGraph() {
         }
 
         console.log("[Plot] Calling Plotly.react...");
+        progressText.textContent = 'Plotlyでレンダリング中...';
+        
         // Use react instead of newPlot for better performance and stability on updates
-        Plotly.react(container, plotData, layout, { 
+        await Plotly.react(container, plotData, layout, { 
             responsive: true,
             displaylogo: false,
             modeBarButtonsToRemove: ['sendDataToCloud']
-        })
-            .then(() => {
-                console.log("[Plot] Plotly rendering complete");
-                console.log(`[Plot] Container innerHTML length: ${container.innerHTML.length}`);
-                // Force a resize calculation just in case
-                Plotly.Plots.resize(container);
-            })
-            .catch(err => console.error("[Plot] Plotly error:", err));
+        });
+        
+        console.log("[Plot] Plotly rendering complete");
+        console.log(`[Plot] Container innerHTML length: ${container.innerHTML.length}`);
+        // Force a resize calculation just in case
+        Plotly.Plots.resize(container);
             
     } catch (err) {
         console.error("[Plot] Unexpected error during plotting:", err);
         alert("描画中にエラーが発生しました。詳細はコンソールを確認してください。");
+    } finally {
+        progressOverlay.style.display = 'none';
     }
 }
 
