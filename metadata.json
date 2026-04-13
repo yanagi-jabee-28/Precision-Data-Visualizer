@@ -1,0 +1,5 @@
+{
+  "name": "Precision Data Visualizer",
+  "description": "A high-performance web application for scientific data visualization, featuring multi-file overlay, segment sweep subplots, and statistical analysis for engineering measurements.",
+  "requestFramePermissions": []
+}

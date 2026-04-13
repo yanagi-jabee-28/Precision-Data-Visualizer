@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Visualization Tool</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <h2>Data Visualization</h2>
+            
+            <div class="control-group">
+                <label for="mode-select">■ 描画モード</label>
+                <select id="mode-select"></select>
+            </div>
+
+            <div class="control-group">
+                <label>■ データファイル</label>
+                <div id="drop-zone" class="drop-zone">
+                    ドラッグ＆ドロップ<br>またはクリックしてファイル選択
+                    <input type="file" id="file-input" multiple accept=".dat,.csv,*.*" style="display: none;">
+                </div>
+                <ul id="file-list" class="file-list"></ul>
+                <div class="button-row">
+                    <button id="btn-clear-files" class="btn btn-danger">クリア</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label>■ 描画スタイル</label>
+                <div class="radio-group">
+                    <label><input type="radio" name="plot-style" value="all" checked> 個別プロット (All)</label>
+                    <label><input type="radio" name="plot-style" value="average"> 平均値 (Average)</label>
+                </div>
+            </div>
+
+            <div class="control-group" id="avg-options" style="opacity: 0.5; pointer-events: none;">
+                <label for="group-name">グループ名(凡例):</label>
+                <input type="text" id="group-name" placeholder="Average">
+            </div>
+
+            <hr>
+
+            <div class="control-group">
+                <button id="btn-filter" class="btn btn-secondary">周波数フィルタ (Filter)</button>
+            </div>
+
+            <div class="control-group">
+                <button id="btn-plot" class="btn btn-primary">グラフ描画 (PLOT)</button>
+            </div>
+
+            <div class="control-group">
+                <button id="btn-export" class="btn btn-success">CSVエクスポート (平均)</button>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <div id="plot-container" class="plot-container"></div>
+        </main>
+    </div>
+
+    <!-- Filter Modal -->
+    <div id="filter-modal" class="modal">
+        <div class="modal-content">
+            <h3>周波数フィルタ</h3>
+            <p>削除したい周波数帯(クラスタ)を選択してください:</p>
+            <div class="filter-list-container">
+                <ul id="filter-list" class="filter-list"></ul>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-filter-cancel" class="btn btn-secondary">キャンセル</button>
+                <button id="btn-filter-apply" class="btn btn-danger">選択した項目を削除</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
