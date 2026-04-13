@@ -40,17 +40,23 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         dropZone.classList.remove('dragover');
         
+        console.log("[Drop] Items detected:", e.dataTransfer.items ? e.dataTransfer.items.length : "none");
         const items = e.dataTransfer.items;
         if (items) {
             const files = [];
             const queue = [];
             for (let i = 0; i < items.length; i++) {
                 const entry = items[i].webkitGetAsEntry();
-                if (entry) queue.push(traverseFileTree(entry, files));
+                if (entry) {
+                    console.log(`[Drop] Processing entry: ${entry.name} (${entry.isFile ? 'file' : 'directory'})`);
+                    queue.push(traverseFileTree(entry, files));
+                }
             }
             await Promise.all(queue);
+            console.log(`[Drop] Total files found after traversal: ${files.length}`);
             handleFiles(files);
         } else {
+            console.log("[Drop] Using fallback files list");
             handleFiles(e.dataTransfer.files);
         }
     });
@@ -65,11 +71,17 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } else if (entry.isDirectory) {
             const dirReader = entry.createReader();
-            const entries = await new Promise((resolve) => {
-                dirReader.readEntries((results) => resolve(results));
-            });
-            const promises = entries.map(e => traverseFileTree(e, fileList));
-            return Promise.all(promises);
+            const readAllEntries = async () => {
+                const entries = await new Promise((resolve) => {
+                    dirReader.readEntries((results) => resolve(results));
+                });
+                if (entries.length > 0) {
+                    const promises = entries.map(e => traverseFileTree(e, fileList));
+                    await Promise.all(promises);
+                    await readAllEntries(); // Read next batch
+                }
+            };
+            return readAllEntries();
         }
     }
     fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
