@@ -401,17 +401,8 @@ function calcStats(dataList, fieldName, scale) {
     }
     
     console.log(`[Stats] Valid points after processing: ${validGrid.length}`);
-    if (validGrid.length > 1) {
-        const span = validGrid[validGrid.length - 1] - validGrid[0];
-        const diffs = [];
-        for(let i=1; i<validGrid.length; i++) diffs.push(validGrid[i] - validGrid[i-1]);
-        diffs.sort((a,b) => a-b);
-        const medianDiff = diffs[Math.floor(diffs.length/2)];
-        const threshold = Math.max(medianDiff * 2, span * 0.01);
-        console.log(`[Stats] Clustering with threshold: ${threshold}`);
-        return clusterFreqs(validGrid, validMean, validStd, threshold);
-    }
     
+    // Return all points without clustering to preserve resolution as requested
     return { freq: validGrid, mean: validMean, std: validStd, threshold: 0 };
 }
 
@@ -451,27 +442,6 @@ function downsample(x, y, z, maxPts) {
     };
 }
 
-function insertNaNsAtGaps(x, y) {
-    if (x.length < 2) return { x, y };
-    const diffs = [];
-    for(let i=1; i<x.length; i++) diffs.push(x[i] - x[i-1]);
-    const sortedDiffs = [...diffs].sort((a,b) => a-b);
-    const medianDiff = sortedDiffs[Math.floor(sortedDiffs.length/2)];
-    const threshold = (medianDiff === 0 ? 1 : medianDiff) * 20;
-    
-    const newX = [], newY = [];
-    newX.push(x[0]); newY.push(y[0]);
-    for(let i=1; i<x.length; i++) {
-        if (x[i] - x[i-1] > threshold) {
-            newX.push(x[i-1] + 1e-9);
-            newY.push(NaN);
-        }
-        newX.push(x[i]);
-        newY.push(y[i]);
-    }
-    return { x: newX, y: newY };
-}
-
 function detectBands(freq) {
     // Use unique frequencies to avoid 0 diffs from multiple identical files
     const uniqueFreqs = Array.from(new Set(freq)).sort((a, b) => a - b);
@@ -504,6 +474,20 @@ function detectBands(freq) {
     }
     bands.push([uniqueFreqs[startIdx], uniqueFreqs[uniqueFreqs.length - 1]]);
     return bands;
+}
+
+function insertNaNsAtGaps(x, y, threshold) {
+    if (x.length < 2) return { x, y };
+    const nx = [x[0]], ny = [y[0]];
+    for (let i = 1; i < x.length; i++) {
+        if (x[i] - x[i - 1] > threshold) {
+            nx.push((x[i] + x[i - 1]) / 2);
+            ny.push(NaN);
+        }
+        nx.push(x[i]);
+        ny.push(y[i]);
+    }
+    return { x: nx, y: ny };
 }
 
 async function plotGraph() {
@@ -581,6 +565,13 @@ async function plotGraph() {
                 zerolinecolor: '#ccc'
             };
 
+            // Pre-calculate stats once for the entire dataset
+            let stats = null;
+            if (plotStyle === 'average') {
+                stats = calcStats(currentData, dataField, scale);
+                if (stats) state.processedStats = { stats, modeKey, dataField, scale };
+            }
+
             bands.forEach((band, bIdx) => {
                 const xAxisKey = bIdx === 0 ? 'xaxis' : `xaxis${bIdx + 1}`;
                 const domainStart = bIdx * (bandWidth + gap);
@@ -595,24 +586,35 @@ async function plotGraph() {
                     zerolinecolor: '#ccc'
                 };
 
-                if (plotStyle === 'average') {
-                    const stats = calcStats(currentData, dataField, scale);
-                    if (stats) {
-                        const mask = stats.freq.map(f => f >= band[0] && f <= band[1]);
-                        const fBand = stats.freq.filter((_, i) => mask[i]);
-                        const mBand = stats.mean.filter((_, i) => mask[i]);
-                        const eBand = stats.std.filter((_, i) => mask[i]);
-
+                if (plotStyle === 'average' && stats) {
+                    // Overlay individual plots as faint lines
+                    currentData.forEach(d => {
+                        const mask = d.freq_GHz.map(f => f >= band[0] && f <= band[1]);
+                        const fBand = d.freq_GHz.filter((_, i) => mask[i]);
+                        const vBand = d.values[dataField].filter((_, i) => mask[i]).map(v => v * scale);
                         if (fBand.length > 0) {
-                            const ds = downsample(fBand, mBand, eBand, 1000);
                             plotData.push({
-                                x: ds.x, y: ds.y, error_y: { type: 'data', array: ds.z, visible: true },
-                                mode: 'markers', name: `Avg (Band ${bIdx + 1})`, marker: { size: 6 },
-                                xaxis: bIdx === 0 ? 'x' : `x${bIdx + 1}`,
-                                yaxis: 'y',
-                                showlegend: bIdx === 0
+                                x: fBand, y: vBand, mode: 'lines', 
+                                line: { width: 1, color: 'rgba(100, 100, 100, 0.15)' },
+                                hoverinfo: 'skip', showlegend: false,
+                                xaxis: bIdx === 0 ? 'x' : `x${bIdx + 1}`, yaxis: 'y'
                             });
                         }
+                    });
+
+                    const mask = stats.freq.map(f => f >= band[0] && f <= band[1]);
+                    const fBand = stats.freq.filter((_, i) => mask[i]);
+                    const mBand = stats.mean.filter((_, i) => mask[i]);
+
+                    if (fBand.length > 0) {
+                        plotData.push({
+                            x: fBand, y: mBand, 
+                            mode: 'lines', name: `Avg (Band ${bIdx + 1})`, 
+                            line: { width: 2.5, color: '#141414' },
+                            xaxis: bIdx === 0 ? 'x' : `x${bIdx + 1}`,
+                            yaxis: 'y',
+                            showlegend: bIdx === 0
+                        });
                     }
                 } else {
                     currentData.forEach((d, dIdx) => {
@@ -645,11 +647,31 @@ async function plotGraph() {
                 const stats = calcStats(currentData, dataField, scale);
                 if (!stats) return alert("有効なデータがありません。");
                 state.processedStats = { stats, modeKey, dataField, scale };
-                const ds = downsample(stats.freq, stats.mean, stats.std, 2000);
+                
+                // Overlay individual plots as faint lines
+                currentData.forEach(d => {
+                    let x = d.freq_GHz;
+                    let y = d.values[dataField].map(v => v * scale);
+                    plotData.push({
+                        x: x, y: y, mode: 'lines', 
+                        line: { width: 1, color: 'rgba(100, 100, 100, 0.15)' },
+                        hoverinfo: 'skip', showlegend: false
+                    });
+                });
+
+                // Insert NaNs at gaps for the average line
+                const diffs = [];
+                for(let i=1; i<stats.freq.length; i++) diffs.push(stats.freq[i] - stats.freq[i-1]);
+                diffs.sort((a,b) => a-b);
+                const medianDiff = diffs[Math.floor(diffs.length/2)];
+                const gapThreshold = medianDiff * 10; // Threshold to detect gaps in segments
+
+                const lineData = insertNaNsAtGaps(stats.freq, stats.mean, gapThreshold);
+
                 plotData.push({
-                    x: ds.x, y: ds.y, error_y: { type: 'data', array: ds.z, visible: true },
-                    mode: 'markers', name: document.getElementById('group-name').value || 'Average',
-                    marker: { size: 6 }
+                    x: lineData.x, y: lineData.y, 
+                    mode: 'lines', name: document.getElementById('group-name').value || 'Average',
+                    line: { width: 2.5, color: '#141414' }
                 });
             } else {
                 currentData.forEach((d, idx) => {
